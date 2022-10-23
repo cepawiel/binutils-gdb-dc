@@ -1290,7 +1290,7 @@ case "${targ}" in
     targ_selvecs="sh_elf32_nbsd_le_vec sh_coff_vec sh_coff_le_vec"
     ;;
 
-  shl*-*-elf* | sh[1234]l*-*-elf* | sh3el*-*-elf* | shl*-*-kaos*)
+  shl*-*-elf* | sh[1234]l*-*-elf* | sh3el*-*-elf* | shl*-*-kaos* | sh-kos-elf)
     targ_defvec=sh_elf32_le_vec
     targ_selvecs="sh_elf32_vec sh_coff_le_vec sh_coff_vec sh_coff_small_le_vec sh_coff_small_vec"
     targ_underscore=yes
