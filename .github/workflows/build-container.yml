@@ -24,10 +24,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: cepawiel/binutils-gdb-dc/sh-kos-elf
-          build-args: |
-            TARGET=sh-kos-elf
-            PREFIX=/opt/toolchains/gccrs
+          images: ghcr.io/cepawiel/binutils-gdb-dc/sh-kos-elf
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -39,6 +36,9 @@ jobs:
 
       - name: Build and Push
         uses: docker/build-push-action@v3
+        build-args: |
+          TARGET=sh-kos-elf
+          PREFIX=/opt/toolchains/gccrs
         with:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
