@@ -36,10 +36,10 @@ jobs:
 
       - name: Build and Push
         uses: docker/build-push-action@v3
-        build-args: |
-          TARGET=sh-kos-elf
-          PREFIX=/opt/toolchains/gccrs
         with:
+          build-args: |
+            TARGET=sh-kos-elf
+            PREFIX=/opt/toolchains/gccrs
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
