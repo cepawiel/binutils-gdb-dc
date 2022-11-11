@@ -24,7 +24,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ghcr.io/cepawiel/binutils-gdb-dc/sh-kos-elf
+          images: ghcr.io/cepawiel/binutils-sh-kos-elf
           tags: |
             type=ref,event=branch
             type=ref,event=tag
