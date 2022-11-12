@@ -28,6 +28,8 @@
 #include "bfd.h"
 #include <stdbool.h>
 
+#define S_PUB32				0x110e
+
 /* PDBStream70 in pdb1.h */
 struct pdb_stream_70
 {
@@ -91,6 +93,51 @@ struct pdb_dbi_stream_header
 
 #define DBI_STREAM_VERSION_70		19990903
 
+/* PSGSIHDR in gsi.h */
+struct publics_header
+{
+  uint32_t sym_hash_size;
+  uint32_t addr_map_size;
+  uint32_t num_thunks;
+  uint32_t thunks_size;
+  uint32_t thunk_table;
+  uint32_t thunk_table_offset;
+  uint32_t num_sects;
+};
+
+/* GSIHashHdr in gsi.h */
+struct globals_hash_header
+{
+  uint32_t signature;
+  uint32_t version;
+  uint32_t entries_size;
+  uint32_t buckets_size;
+};
+
+/* HRFile in gsi.h */
+struct hash_record
+{
+  uint32_t offset;
+  uint32_t reference;
+};
+
+#define GLOBALS_HASH_SIGNATURE		0xffffffff
+#define GLOBALS_HASH_VERSION_70		0xf12f091a
+
+/* PUBSYM32 in cvinfo.h */
+struct pubsym
+{
+  uint16_t record_length;
+  uint16_t record_type;
+  uint32_t flags;
+  uint32_t offset;
+  uint16_t section;
+  /* followed by null-terminated string */
+} ATTRIBUTE_PACKED;
+
+/* see bitset CV_PUBSYMFLAGS in cvinfo.h */
+#define PUBSYM_FUNCTION			0x2
+
 struct optional_dbg_header
 {
   uint16_t fpo_stream;
@@ -104,6 +151,39 @@ struct optional_dbg_header
   uint16_t pdata_stream;
   uint16_t new_fpo_stream;
   uint16_t orig_section_header_stream;
+};
+
+#define CV_SIGNATURE_C13		4
+
+/* SC in dbicommon.h */
+struct section_contribution
+{
+  uint16_t section;
+  uint16_t padding1;
+  uint32_t offset;
+  uint32_t size;
+  uint32_t characteristics;
+  uint16_t module_index;
+  uint16_t padding2;
+  uint32_t data_crc;
+  uint32_t reloc_crc;
+};
+
+/* MODI_60_Persist in dbi.h */
+struct module_info
+{
+  uint32_t unused1;
+  struct section_contribution sc;
+  uint16_t flags;
+  uint16_t module_sym_stream;
+  uint32_t sym_byte_size;
+  uint32_t c11_byte_size;
+  uint32_t c13_byte_size;
+  uint16_t source_file_count;
+  uint16_t padding;
+  uint32_t unused2;
+  uint32_t source_file_name_index;
+  uint32_t pdb_file_path_name_index;
 };
 
 extern bool create_pdb_file (bfd *, const char *, const unsigned char *);

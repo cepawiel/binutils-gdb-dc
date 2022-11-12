@@ -383,23 +383,240 @@ get_arch_number (bfd *abfd)
   return IMAGE_FILE_MACHINE_I386;
 }
 
+/* Populate the module stream, which consists of the transformed .debug$S
+   data for each object file.  */
+static bool
+populate_module_stream (bfd *stream, uint32_t *sym_byte_size)
+{
+  uint8_t int_buf[sizeof (uint32_t)];
+
+  *sym_byte_size = sizeof (uint32_t);
+
+  /* Write the signature.  */
+
+  bfd_putl32 (CV_SIGNATURE_C13, int_buf);
+
+  if (bfd_bwrite (int_buf, sizeof (uint32_t), stream) != sizeof (uint32_t))
+    return false;
+
+  /* Write the global refs size.  */
+
+  bfd_putl32 (0, int_buf);
+
+  if (bfd_bwrite (int_buf, sizeof (uint32_t), stream) != sizeof (uint32_t))
+    return false;
+
+  return true;
+}
+
+/* Create the module info substream within the DBI.  */
+static bool
+create_module_info_substream (bfd *abfd, bfd *pdb, void **data,
+			      uint32_t *size)
+{
+  uint8_t *ptr;
+
+  static const char linker_fn[] = "* Linker *";
+
+  *size = 0;
+
+  for (bfd *in = coff_data (abfd)->link_info->input_bfds; in;
+       in = in->link.next)
+    {
+      size_t len = sizeof (struct module_info);
+
+      if (!strcmp (bfd_get_filename (in), "dll stuff"))
+	{
+	  len += sizeof (linker_fn); /* Object name.  */
+	  len++; /* Empty module name.  */
+	}
+      else if (in->my_archive)
+	{
+	  char *name = lrealpath (bfd_get_filename (in));
+
+	  len += strlen (name) + 1; /* Object name.  */
+
+	  free (name);
+
+	  name = lrealpath (bfd_get_filename (in->my_archive));
+
+	  len += strlen (name) + 1; /* Archive name.  */
+
+	  free (name);
+	}
+      else
+	{
+	  char *name = lrealpath (bfd_get_filename (in));
+	  size_t name_len = strlen (name) + 1;
+
+	  len += name_len; /* Object name.  */
+	  len += name_len; /* And again as the archive name.  */
+
+	  free (name);
+	}
+
+      if (len % 4)
+	len += 4 - (len % 4);
+
+      *size += len;
+    }
+
+  *data = xmalloc (*size);
+
+  ptr = *data;
+
+  for (bfd *in = coff_data (abfd)->link_info->input_bfds; in;
+       in = in->link.next)
+    {
+      struct module_info *mod = (struct module_info *) ptr;
+      uint16_t stream_num;
+      bfd *stream;
+      uint32_t sym_byte_size;
+      uint8_t *start = ptr;
+
+      stream = add_stream (pdb, NULL, &stream_num);
+
+      if (!stream)
+	{
+	  free (*data);
+	  return false;
+	}
+
+      if (!populate_module_stream (stream, &sym_byte_size))
+	{
+	  free (*data);
+	  return false;
+	}
+
+      bfd_putl32 (0, &mod->unused1);
+
+      /* These are dummy values - MSVC copies the first section contribution
+	 entry here, but doesn't seem to use it for anything.  */
+      bfd_putl16 (0xffff, &mod->sc.section);
+      bfd_putl16 (0, &mod->sc.padding1);
+      bfd_putl32 (0, &mod->sc.offset);
+      bfd_putl32 (0xffffffff, &mod->sc.size);
+      bfd_putl32 (0, &mod->sc.characteristics);
+      bfd_putl16 (0xffff, &mod->sc.module_index);
+      bfd_putl16 (0, &mod->sc.padding2);
+      bfd_putl32 (0, &mod->sc.data_crc);
+      bfd_putl32 (0, &mod->sc.reloc_crc);
+
+      bfd_putl16 (0, &mod->flags);
+      bfd_putl16 (stream_num, &mod->module_sym_stream);
+      bfd_putl32 (sym_byte_size, &mod->sym_byte_size);
+      bfd_putl32 (0, &mod->c11_byte_size);
+      bfd_putl32 (0, &mod->c13_byte_size);
+      bfd_putl16 (0, &mod->source_file_count);
+      bfd_putl16 (0, &mod->padding);
+      bfd_putl32 (0, &mod->unused2);
+      bfd_putl32 (0, &mod->source_file_name_index);
+      bfd_putl32 (0, &mod->pdb_file_path_name_index);
+
+      ptr += sizeof (struct module_info);
+
+      if (!strcmp (bfd_get_filename (in), "dll stuff"))
+	{
+	  /* Object name.  */
+	  memcpy (ptr, linker_fn, sizeof (linker_fn));
+	  ptr += sizeof (linker_fn);
+
+	  /* Empty module name.  */
+	  *ptr = 0;
+	  ptr++;
+	}
+      else if (in->my_archive)
+	{
+	  char *name = lrealpath (bfd_get_filename (in));
+	  size_t name_len = strlen (name) + 1;
+
+	  /* Object name.  */
+	  memcpy (ptr, name, name_len);
+	  ptr += name_len;
+
+	  free (name);
+
+	  name = lrealpath (bfd_get_filename (in->my_archive));
+	  name_len = strlen (name) + 1;
+
+	  /* Archive name.  */
+	  memcpy (ptr, name, name_len);
+	  ptr += name_len;
+
+	  free (name);
+	}
+      else
+	{
+	  char *name = lrealpath (bfd_get_filename (in));
+	  size_t name_len = strlen (name) + 1;
+
+	  /* Object name.  */
+	  memcpy (ptr, name, name_len);
+	  ptr += name_len;
+
+	  /* Object name again as archive name.  */
+	  memcpy (ptr, name, name_len);
+	  ptr += name_len;
+
+	  free (name);
+	}
+
+      /* Pad to next four-byte boundary.  */
+
+      if ((ptr - start) % 4)
+	{
+	  memset (ptr, 0, 4 - ((ptr - start) % 4));
+	  ptr += 4 - ((ptr - start) % 4);
+	}
+    }
+
+  return true;
+}
+
+/* Return the index of a given output section.  */
+static uint16_t
+find_section_number (bfd *abfd, asection *sect)
+{
+  uint16_t i = 1;
+
+  for (asection *s = abfd->sections; s; s = s->next)
+    {
+      if (s == sect)
+	return i;
+
+      /* Empty sections aren't output.  */
+      if (s->size != 0)
+	i++;
+    }
+
+  return 0;
+}
+
 /* Stream 4 is the debug information (DBI) stream.  */
 static bool
-populate_dbi_stream (bfd *stream, bfd *abfd)
+populate_dbi_stream (bfd *stream, bfd *abfd, bfd *pdb,
+		     uint16_t section_header_stream_num,
+		     uint16_t sym_rec_stream_num,
+		     uint16_t publics_stream_num)
 {
   struct pdb_dbi_stream_header h;
   struct optional_dbg_header opt;
+  void *mod_info;
+  uint32_t mod_info_size;
+
+  if (!create_module_info_substream (abfd, pdb, &mod_info, &mod_info_size))
+    return false;
 
   bfd_putl32 (0xffffffff, &h.version_signature);
   bfd_putl32 (DBI_STREAM_VERSION_70, &h.version_header);
   bfd_putl32 (1, &h.age);
   bfd_putl16 (0xffff, &h.global_stream_index);
   bfd_putl16 (0x8e1d, &h.build_number); // MSVC 14.29
-  bfd_putl16 (0xffff, &h.public_stream_index);
+  bfd_putl16 (publics_stream_num, &h.public_stream_index);
   bfd_putl16 (0, &h.pdb_dll_version);
-  bfd_putl16 (0xffff, &h.sym_record_stream);
+  bfd_putl16 (sym_rec_stream_num, &h.sym_record_stream);
   bfd_putl16 (0, &h.pdb_dll_rbld);
-  bfd_putl32 (0, &h.mod_info_size);
+  bfd_putl32 (mod_info_size, &h.mod_info_size);
   bfd_putl32 (0, &h.section_contribution_size);
   bfd_putl32 (0, &h.section_map_size);
   bfd_putl32 (0, &h.source_info_size);
@@ -412,14 +629,25 @@ populate_dbi_stream (bfd *stream, bfd *abfd)
   bfd_putl32 (0, &h.padding);
 
   if (bfd_bwrite (&h, sizeof (h), stream) != sizeof (h))
-    return false;
+    {
+      free (mod_info);
+      return false;
+    }
+
+  if (bfd_bwrite (mod_info, mod_info_size, stream) != mod_info_size)
+    {
+      free (mod_info);
+      return false;
+    }
+
+  free (mod_info);
 
   bfd_putl16 (0xffff, &opt.fpo_stream);
   bfd_putl16 (0xffff, &opt.exception_stream);
   bfd_putl16 (0xffff, &opt.fixup_stream);
   bfd_putl16 (0xffff, &opt.omap_to_src_stream);
   bfd_putl16 (0xffff, &opt.omap_from_src_stream);
-  bfd_putl16 (0xffff, &opt.section_header_stream);
+  bfd_putl16 (section_header_stream_num, &opt.section_header_stream);
   bfd_putl16 (0xffff, &opt.token_map_stream);
   bfd_putl16 (0xffff, &opt.xdata_stream);
   bfd_putl16 (0xffff, &opt.pdata_stream);
@@ -432,6 +660,347 @@ populate_dbi_stream (bfd *stream, bfd *abfd)
   return true;
 }
 
+/* Used as parameter to qsort, to sort publics by hash.  */
+static int
+public_compare_hash (const void *s1, const void *s2)
+{
+  const struct public *p1 = *(const struct public **) s1;
+  const struct public *p2 = *(const struct public **) s2;
+
+  if (p1->hash < p2->hash)
+    return -1;
+  if (p1->hash > p2->hash)
+    return 1;
+
+  return 0;
+}
+
+/* Used as parameter to qsort, to sort publics by address.  */
+static int
+public_compare_addr (const void *s1, const void *s2)
+{
+  const struct public *p1 = *(const struct public **) s1;
+  const struct public *p2 = *(const struct public **) s2;
+
+  if (p1->section < p2->section)
+    return -1;
+  if (p1->section > p2->section)
+    return 1;
+
+  if (p1->address < p2->address)
+    return -1;
+  if (p1->address > p2->address)
+    return 1;
+
+  return 0;
+}
+
+/* The publics stream is a hash map of S_PUB32 records, which are stored
+   in the symbol record stream.  Each S_PUB32 entry represents a symbol
+   from the point of view of the linker: a section index, an offset within
+   the section, and a mangled name.  Compare with S_GDATA32 and S_GPROC32,
+   which are the same thing but generated by the compiler.  */
+static bool
+populate_publics_stream (bfd *stream, bfd *abfd, bfd *sym_rec_stream)
+{
+  struct publics_header header;
+  struct globals_hash_header hash_header;
+  const unsigned int num_buckets = 4096;
+  unsigned int num_entries = 0, filled_buckets = 0;
+  unsigned int buckets_size, sym_hash_size;
+  char int_buf[sizeof (uint32_t)];
+  struct public *publics_head = NULL, *publics_tail = NULL;
+  struct public **buckets;
+  struct public **sorted = NULL;
+  bool ret = false;
+
+  buckets = xmalloc (sizeof (struct public *) * num_buckets);
+  memset (buckets, 0, sizeof (struct public *) * num_buckets);
+
+  /* Loop through the global symbols in our input files, and write S_PUB32
+     records in the symbol record stream for those that make it into the
+     final image.  */
+  for (bfd *in = coff_data (abfd)->link_info->input_bfds; in;
+       in = in->link.next)
+    {
+      for (unsigned int i = 0; i < in->symcount; i++)
+	{
+	  struct bfd_symbol *sym = in->outsymbols[i];
+
+	  if (sym->flags & BSF_GLOBAL)
+	    {
+	      struct pubsym ps;
+	      uint16_t record_length;
+	      const char *name = sym->name;
+	      size_t name_len = strlen (name);
+	      struct public *p = xmalloc (sizeof (struct public));
+	      unsigned int padding = 0;
+	      uint16_t section;
+	      uint32_t flags = 0;
+
+	      section =
+		find_section_number (abfd, sym->section->output_section);
+
+	      if (section == 0)
+		continue;
+
+	      p->next = NULL;
+	      p->offset = bfd_tell (sym_rec_stream);
+	      p->hash = calc_hash (name, name_len) % num_buckets;
+	      p->section = section;
+	      p->address = sym->section->output_offset + sym->value;
+
+	      record_length = sizeof (struct pubsym) + name_len + 1;
+
+	      if (record_length % 4)
+		padding = 4 - (record_length % 4);
+
+	      /* Assume that all global symbols in executable sections
+		 are functions.  */
+	      if (sym->section->flags & SEC_CODE)
+		flags = PUBSYM_FUNCTION;
+
+	      bfd_putl16 (record_length + padding - sizeof (uint16_t),
+			  &ps.record_length);
+	      bfd_putl16 (S_PUB32, &ps.record_type);
+	      bfd_putl32 (flags, &ps.flags);
+	      bfd_putl32 (p->address, &ps.offset);
+	      bfd_putl16 (p->section, &ps.section);
+
+	      if (bfd_bwrite (&ps, sizeof (struct pubsym), sym_rec_stream) !=
+		  sizeof (struct pubsym))
+		goto end;
+
+	      if (bfd_bwrite (name, name_len + 1, sym_rec_stream) !=
+		  name_len + 1)
+		goto end;
+
+	      for (unsigned int j = 0; j < padding; j++)
+		{
+		  uint8_t b = 0;
+
+		  if (bfd_bwrite (&b, sizeof (uint8_t), sym_rec_stream) !=
+		      sizeof (uint8_t))
+		    goto end;
+		}
+
+	      if (!publics_head)
+		publics_head = p;
+	      else
+		publics_tail->next = p;
+
+	      publics_tail = p;
+	      num_entries++;
+	    }
+	}
+    }
+
+
+  if (num_entries > 0)
+    {
+      /* Create an array of pointers, sorted by hash value.  */
+
+      sorted = xmalloc (sizeof (struct public *) * num_entries);
+
+      struct public *p = publics_head;
+      for (unsigned int i = 0; i < num_entries; i++)
+	{
+	  sorted[i] = p;
+	  p = p->next;
+	}
+
+      qsort (sorted, num_entries, sizeof (struct public *),
+	     public_compare_hash);
+
+      /* Populate the buckets.  */
+
+      for (unsigned int i = 0; i < num_entries; i++)
+	{
+	  if (!buckets[sorted[i]->hash])
+	    {
+	      buckets[sorted[i]->hash] = sorted[i];
+	      filled_buckets++;
+	    }
+
+	  sorted[i]->index = i;
+	}
+    }
+
+  buckets_size = num_buckets / 8;
+  buckets_size += sizeof (uint32_t);
+  buckets_size += filled_buckets * sizeof (uint32_t);
+
+  sym_hash_size = sizeof (hash_header);
+  sym_hash_size += num_entries * sizeof (struct hash_record);
+  sym_hash_size += buckets_size;
+
+  /* Output the publics header.  */
+
+  bfd_putl32 (sym_hash_size, &header.sym_hash_size);
+  bfd_putl32 (num_entries * sizeof (uint32_t), &header.addr_map_size);
+  bfd_putl32 (0, &header.num_thunks);
+  bfd_putl32 (0, &header.thunks_size);
+  bfd_putl32 (0, &header.thunk_table);
+  bfd_putl32 (0, &header.thunk_table_offset);
+  bfd_putl32 (0, &header.num_sects);
+
+  if (bfd_bwrite (&header, sizeof (header), stream) != sizeof (header))
+    goto end;
+
+  /* Output the global hash header.  */
+
+  bfd_putl32 (GLOBALS_HASH_SIGNATURE, &hash_header.signature);
+  bfd_putl32 (GLOBALS_HASH_VERSION_70, &hash_header.version);
+  bfd_putl32 (num_entries * sizeof (struct hash_record),
+	      &hash_header.entries_size);
+  bfd_putl32 (buckets_size, &hash_header.buckets_size);
+
+  if (bfd_bwrite (&hash_header, sizeof (hash_header), stream) !=
+      sizeof (hash_header))
+    goto end;
+
+  /* Write the entries in hash order.  */
+
+  for (unsigned int i = 0; i < num_entries; i++)
+    {
+      struct hash_record hr;
+
+      bfd_putl32 (sorted[i]->offset + 1, &hr.offset);
+      bfd_putl32 (1, &hr.reference);
+
+      if (bfd_bwrite (&hr, sizeof (hr), stream) != sizeof (hr))
+	goto end;
+    }
+
+  /* Write the bitmap for filled and unfilled buckets.  */
+
+  for (unsigned int i = 0; i < num_buckets; i += 8)
+    {
+      uint8_t v = 0;
+
+      for (unsigned int j = 0; j < 8; j++)
+	{
+	  if (buckets[i + j])
+	    v |= 1 << j;
+	}
+
+      if (bfd_bwrite (&v, sizeof (v), stream) != sizeof (v))
+	goto end;
+    }
+
+  /* Add a 4-byte gap.  */
+
+  bfd_putl32 (0, int_buf);
+
+  if (bfd_bwrite (int_buf, sizeof (uint32_t), stream) != sizeof (uint32_t))
+    goto end;
+
+  /* Write the bucket offsets.  */
+
+  for (unsigned int i = 0; i < num_buckets; i++)
+    {
+      if (buckets[i])
+	{
+	  /* 0xc is size of internal hash_record structure in
+	     Microsoft's parser.  */
+	  bfd_putl32 (buckets[i]->index * 0xc, int_buf);
+
+	  if (bfd_bwrite (int_buf, sizeof (uint32_t), stream) !=
+	      sizeof (uint32_t))
+	    goto end;
+	}
+    }
+
+  /* Write the address map: offsets into the symbol record stream of
+     S_PUB32 records, ordered by address.  */
+
+  if (num_entries > 0)
+    {
+      qsort (sorted, num_entries, sizeof (struct public *),
+	     public_compare_addr);
+
+      for (unsigned int i = 0; i < num_entries; i++)
+	{
+	  bfd_putl32 (sorted[i]->offset, int_buf);
+
+	  if (bfd_bwrite (int_buf, sizeof (uint32_t), stream) !=
+	      sizeof (uint32_t))
+	    goto end;
+	}
+    }
+
+  ret = true;
+
+end:
+  free (buckets);
+
+  while (publics_head)
+    {
+      struct public *p = publics_head->next;
+
+      free (publics_head);
+      publics_head = p;
+    }
+
+  free (sorted);
+
+  return ret;
+}
+
+/* The section header stream contains a copy of the section headers
+   from the PE file, in the same format.  */
+static bool
+create_section_header_stream (bfd *pdb, bfd *abfd, uint16_t *num)
+{
+  bfd *stream;
+  unsigned int section_count;
+  file_ptr scn_base;
+  size_t len;
+  char *buf;
+
+  stream = add_stream (pdb, NULL, num);
+  if (!stream)
+    return false;
+
+  section_count = abfd->section_count;
+
+  /* Empty sections aren't output.  */
+  for (asection *sect = abfd->sections; sect; sect = sect->next)
+    {
+      if (sect->size == 0)
+	section_count--;
+    }
+
+  if (section_count == 0)
+    return true;
+
+  /* Copy section table from output - it's already been written at this
+     point.  */
+
+  scn_base = bfd_coff_filhsz (abfd) + bfd_coff_aoutsz (abfd);
+
+  bfd_seek (abfd, scn_base, SEEK_SET);
+
+  len = section_count * sizeof (struct external_scnhdr);
+  buf = xmalloc (len);
+
+  if (bfd_bread (buf, len, abfd) != len)
+    {
+      free (buf);
+      return false;
+    }
+
+  if (bfd_bwrite (buf, len, stream) != len)
+    {
+      free (buf);
+      return false;
+    }
+
+  free (buf);
+
+  return true;
+}
+
 /* Create a PDB debugging file for the PE image file abfd with the build ID
    guid, stored at pdb_name.  */
 bool
@@ -439,13 +1008,14 @@ create_pdb_file (bfd *abfd, const char *pdb_name, const unsigned char *guid)
 {
   bfd *pdb;
   bool ret = false;
-  bfd *info_stream, *dbi_stream, *names_stream;
+  bfd *info_stream, *dbi_stream, *names_stream, *sym_rec_stream,
+    *publics_stream;
+  uint16_t section_header_stream_num, sym_rec_stream_num, publics_stream_num;
 
   pdb = bfd_openw (pdb_name, "pdb");
   if (!pdb)
     {
-      einfo (_("%P: warning: cannot create PDB file: %s\n"),
-	     bfd_errmsg (bfd_get_error ()));
+      einfo (_("%P: warning: cannot create PDB file: %E\n"));
       return false;
     }
 
@@ -454,7 +1024,7 @@ create_pdb_file (bfd *abfd, const char *pdb_name, const unsigned char *guid)
   if (!create_old_directory_stream (pdb))
     {
       einfo (_("%P: warning: cannot create old directory stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
@@ -463,14 +1033,14 @@ create_pdb_file (bfd *abfd, const char *pdb_name, const unsigned char *guid)
   if (!info_stream)
     {
       einfo (_("%P: warning: cannot create info stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
   if (!create_type_stream (pdb))
     {
       einfo (_("%P: warning: cannot create TPI stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
@@ -479,14 +1049,14 @@ create_pdb_file (bfd *abfd, const char *pdb_name, const unsigned char *guid)
   if (!dbi_stream)
     {
       einfo (_("%P: warning: cannot create DBI stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
   if (!create_type_stream (pdb))
     {
       einfo (_("%P: warning: cannot create IPI stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
@@ -495,21 +1065,54 @@ create_pdb_file (bfd *abfd, const char *pdb_name, const unsigned char *guid)
   if (!names_stream)
     {
       einfo (_("%P: warning: cannot create /names stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 
-  if (!populate_dbi_stream (dbi_stream, abfd))
+  sym_rec_stream = add_stream (pdb, NULL, &sym_rec_stream_num);
+
+  if (!sym_rec_stream)
+    {
+      einfo (_("%P: warning: cannot create symbol record stream "
+	       "in PDB file: %E\n"));
+      goto end;
+    }
+
+  publics_stream = add_stream (pdb, NULL, &publics_stream_num);
+
+  if (!publics_stream)
+    {
+      einfo (_("%P: warning: cannot create publics stream "
+	       "in PDB file: %E\n"));
+      goto end;
+    }
+
+  if (!create_section_header_stream (pdb, abfd, &section_header_stream_num))
+    {
+      einfo (_("%P: warning: cannot create section header stream "
+	       "in PDB file: %E\n"));
+      goto end;
+    }
+
+  if (!populate_dbi_stream (dbi_stream, abfd, pdb, section_header_stream_num,
+			    sym_rec_stream_num, publics_stream_num))
     {
       einfo (_("%P: warning: cannot populate DBI stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
+      goto end;
+    }
+
+  if (!populate_publics_stream (publics_stream, abfd, sym_rec_stream))
+    {
+      einfo (_("%P: warning: cannot populate publics stream "
+	       "in PDB file: %E\n"));
       goto end;
     }
 
   if (!populate_info_stream (pdb, info_stream, guid))
     {
       einfo (_("%P: warning: cannot populate info stream "
-	       "in PDB file: %s\n"), bfd_errmsg (bfd_get_error ()));
+	       "in PDB file: %E\n"));
       goto end;
     }
 

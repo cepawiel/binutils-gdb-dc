@@ -1583,6 +1583,12 @@ riscv_release_subset_list (riscv_subset_list_t *subset_list)
     }
 
   subset_list->tail = NULL;
+
+  if (subset_list->arch_str != NULL)
+    {
+      free ((void*) subset_list->arch_str);
+      subset_list->arch_str = NULL;
+    }
 }
 
 /* Parsing extension version.
@@ -1870,13 +1876,6 @@ riscv_parse_check_conflicts (riscv_parse_subset_t *rps)
       rps->error_handler (_("rv%d does not support the `q' extension"), xlen);
       no_conflict = false;
     }
-  if (riscv_lookup_subset (rps->subset_list, "e", &subset)
-      && riscv_lookup_subset (rps->subset_list, "f", &subset))
-    {
-      rps->error_handler
-        (_("rv32e does not support the `f' extension"));
-      no_conflict = false;
-    }
   if (riscv_lookup_subset (rps->subset_list, "zfinx", &subset)
       && riscv_lookup_subset (rps->subset_list, "f", &subset))
     {
@@ -2138,6 +2137,7 @@ riscv_copy_subset_list (riscv_subset_list_t *subset_list)
 {
   riscv_subset_list_t *new = xmalloc (sizeof *new);
   new->head = riscv_copy_subset (new, subset_list->head);
+  new->arch_str = strdup (subset_list->arch_str);
   return new;
 }
 
