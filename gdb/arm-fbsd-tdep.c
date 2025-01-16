@@ -1,6 +1,6 @@
 /* Target-dependent code for FreeBSD/arm.
 
-   Copyright (C) 2017-2022 Free Software Foundation, Inc.
+   Copyright (C) 2017-2024 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,7 +17,6 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "defs.h"
 
 #include "elf/common.h"
 #include "target-descriptions.h"
@@ -49,6 +48,14 @@ static const struct regcache_map_entry arm_fbsd_vfpregmap[] =
   {
     { 32, ARM_D0_REGNUM, 8 }, /* d0 ... d31 */
     { 1, ARM_FPSCR_REGNUM, 4 },
+    { 0 }
+  };
+
+/* Register numbers are relative to tdep->tls_regnum.  */
+
+static const struct regcache_map_entry arm_fbsd_tls_regmap[] =
+  {
+    { 1, 0, 4 },	/* tpidruro  */
     { 0 }
   };
 
@@ -97,7 +104,7 @@ static const struct regcache_map_entry arm_fbsd_vfpregmap[] =
 
 static void
 arm_fbsd_sigframe_init (const struct tramp_frame *self,
-			frame_info_ptr this_frame,
+			const frame_info_ptr &this_frame,
 			struct trad_frame_cache *this_cache,
 			CORE_ADDR func)
 {
@@ -151,6 +158,34 @@ const struct regset arm_fbsd_vfpregset =
     regcache_supply_regset, regcache_collect_regset
   };
 
+static void
+arm_fbsd_supply_tls_regset (const struct regset *regset,
+			    struct regcache *regcache,
+			    int regnum, const void *buf, size_t size)
+{
+  struct gdbarch *gdbarch = regcache->arch ();
+  arm_gdbarch_tdep *tdep = gdbarch_tdep<arm_gdbarch_tdep> (gdbarch);
+
+  regcache->supply_regset (regset, tdep->tls_regnum, regnum, buf, size);
+}
+
+static void
+arm_fbsd_collect_tls_regset (const struct regset *regset,
+			     const struct regcache *regcache,
+			     int regnum, void *buf, size_t size)
+{
+  struct gdbarch *gdbarch = regcache->arch ();
+  arm_gdbarch_tdep *tdep = gdbarch_tdep<arm_gdbarch_tdep> (gdbarch);
+
+  regcache->collect_regset (regset, tdep->tls_regnum, regnum, buf, size);
+}
+
+const struct regset arm_fbsd_tls_regset =
+  {
+    arm_fbsd_tls_regmap,
+    arm_fbsd_supply_tls_regset, arm_fbsd_collect_tls_regset
+  };
+
 /* Implement the "iterate_over_regset_sections" gdbarch method.  */
 
 static void
@@ -165,22 +200,8 @@ arm_fbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,
       &arm_fbsd_gregset, NULL, cb_data);
 
   if (tdep->tls_regnum > 0)
-    {
-      const struct regcache_map_entry arm_fbsd_tlsregmap[] =
-	{
-	  { 1, tdep->tls_regnum, 4 },
-	  { 0 }
-	};
-
-      const struct regset arm_fbsd_tlsregset =
-	{
-	  arm_fbsd_tlsregmap,
-	  regcache_supply_regset, regcache_collect_regset
-	};
-
-      cb (".reg-aarch-tls", ARM_FBSD_SIZEOF_TLSREGSET, ARM_FBSD_SIZEOF_TLSREGSET,
-	  &arm_fbsd_tlsregset, NULL, cb_data);
-    }
+    cb (".reg-aarch-tls", ARM_FBSD_SIZEOF_TLSREGSET, ARM_FBSD_SIZEOF_TLSREGSET,
+	&arm_fbsd_tls_regset, NULL, cb_data);
 
   /* While FreeBSD/arm cores do contain a NT_FPREGSET / ".reg2"
      register set, it is not populated with register values by the
@@ -193,7 +214,7 @@ arm_fbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,
 /* See arm-fbsd-tdep.h.  */
 
 const struct target_desc *
-arm_fbsd_read_description_auxv (const gdb::optional<gdb::byte_vector> &auxv,
+arm_fbsd_read_description_auxv (const std::optional<gdb::byte_vector> &auxv,
 				target_ops *target, gdbarch *gdbarch, bool tls)
 {
   CORE_ADDR arm_hwcap = 0;
@@ -206,7 +227,7 @@ arm_fbsd_read_description_auxv (const gdb::optional<gdb::byte_vector> &auxv,
   if (arm_hwcap & HWCAP_VFP)
     {
       if (arm_hwcap & HWCAP_NEON)
-	return aarch32_read_description ();
+	return aarch32_read_description (tls);
       else if ((arm_hwcap & (HWCAP_VFPv3 | HWCAP_VFPD32))
 	       == (HWCAP_VFPv3 | HWCAP_VFPD32))
 	return arm_read_description (ARM_FP_TYPE_VFPV3, tls);
@@ -222,10 +243,10 @@ arm_fbsd_read_description_auxv (const gdb::optional<gdb::byte_vector> &auxv,
 const struct target_desc *
 arm_fbsd_read_description_auxv (bool tls)
 {
-  gdb::optional<gdb::byte_vector> auxv = target_read_auxv ();
+  const std::optional<gdb::byte_vector> &auxv = target_read_auxv ();
   return arm_fbsd_read_description_auxv (auxv,
 					 current_inferior ()->top_target (),
-					 current_inferior ()->gdbarch,
+					 current_inferior ()->arch (),
 					 tls);
 }
 
@@ -238,7 +259,7 @@ arm_fbsd_core_read_description (struct gdbarch *gdbarch,
 {
   asection *tls = bfd_get_section_by_name (abfd, ".reg-aarch-tls");
 
-  gdb::optional<gdb::byte_vector> auxv = target_read_auxv_raw (target);
+  std::optional<gdb::byte_vector> auxv = target_read_auxv_raw (target);
   return arm_fbsd_read_description_auxv (auxv, target, gdbarch, tls != nullptr);
 }
 
@@ -249,10 +270,8 @@ arm_fbsd_get_thread_local_address (struct gdbarch *gdbarch, ptid_t ptid,
 				   CORE_ADDR lm_addr, CORE_ADDR offset)
 {
   arm_gdbarch_tdep *tdep = gdbarch_tdep<arm_gdbarch_tdep> (gdbarch);
-  struct regcache *regcache;
-
-  regcache = get_thread_arch_regcache (current_inferior ()->process_target (),
-				       ptid, gdbarch);
+  regcache *regcache
+    = get_thread_arch_regcache (current_inferior (), ptid, gdbarch);
 
   target_fetch_registers (regcache, tdep->tls_regnum);
 

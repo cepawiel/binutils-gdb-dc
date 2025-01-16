@@ -1,5 +1,5 @@
 /* BFD support for AArch64.
-   Copyright (C) 2009-2022 Free Software Foundation, Inc.
+   Copyright (C) 2009-2025 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of BFD, the Binary File Descriptor library.
@@ -73,7 +73,10 @@ processors[] =
   { bfd_mach_aarch64,	  "cortex-a65"	    },
   { bfd_mach_aarch64,	  "cortex-a65ae"    },
   { bfd_mach_aarch64,	  "cortex-a76ae"    },
-  { bfd_mach_aarch64,	  "cortex-a77"	    }
+  { bfd_mach_aarch64,	  "cortex-a77"	    },
+  { bfd_mach_aarch64,	  "cortex-a720"	    },
+  { bfd_mach_aarch64,     "cortex-x3"       },
+  { bfd_mach_aarch64,     "cortex-x4"       },
 };
 
 static bool
@@ -84,6 +87,15 @@ scan (const struct bfd_arch_info *info, const char *string)
   /* First test for an exact match.  */
   if (strcasecmp (string, info->printable_name) == 0)
     return true;
+
+  /* If there is a prefix of "aarch64:" then skip it.  */
+  const char * colon;
+  if ((colon = strchr (string, ':')) != NULL)
+    {
+      if (strncasecmp (string, "aarch64", colon - string) != 0)
+	return false;
+      string = colon + 1;
+    }
 
   /* Next check for a processor name instead of an Architecture name.  */
   for (i = sizeof (processors) / sizeof (processors[0]); i--;)

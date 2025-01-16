@@ -1,5 +1,5 @@
 /* ldmisc.c
-   Copyright (C) 1991-2022 Free Software Foundation, Inc.
+   Copyright (C) 1991-2025 Free Software Foundation, Inc.
    Written by Steve Chamberlain of Cygnus Support.
 
    This file is part of the GNU Binutils.
@@ -52,6 +52,7 @@
  %d integer, like printf
  %ld long, like printf
  %lu unsigned long, like printf
+ %lx unsigned long, like printf
  %p native (host) void* pointer, like printf
  %pA section name from a section
  %pB filename from a bfd
@@ -63,6 +64,7 @@
  %s arbitrary string, like printf
  %u integer, like printf
  %v hex bfd_vma, no leading zeros
+ %x integer, like printf
 */
 
 void
@@ -152,11 +154,12 @@ vfinfo (FILE *fp, const char *fmt, va_list ap, bool is_warning)
 
 	    case 'd':
 	    case 'u':
+	    case 'x':
 	      arg_type = Int;
 	      break;
 
 	    case 'l':
-	      if (*scan == 'd' || *scan == 'u')
+	      if (*scan == 'd' || *scan == 'u' || *scan == 'x')
 		{
 		  ++scan;
 		  arg_type = Long;
@@ -544,6 +547,12 @@ vfinfo (FILE *fp, const char *fmt, va_list ap, bool is_warning)
 	      ++arg_count;
 	      break;
 
+	    case 'x':
+	      /* unsigned integer, like printf */
+	      fprintf (fp, "%x", args[arg_no].i);
+	      ++arg_count;
+	      break;
+
 	    case 'l':
 	      if (*fmt == 'd')
 		{
@@ -555,6 +564,13 @@ vfinfo (FILE *fp, const char *fmt, va_list ap, bool is_warning)
 	      else if (*fmt == 'u')
 		{
 		  fprintf (fp, "%lu", args[arg_no].l);
+		  ++arg_count;
+		  ++fmt;
+		  break;
+		}
+	      else if (*fmt == 'x')
+		{
+		  fprintf (fp, "%lx", args[arg_no].l);
 		  ++arg_count;
 		  ++fmt;
 		  break;
@@ -601,6 +617,81 @@ einfo (const char *fmt, ...)
   va_start (arg, fmt);
   vfinfo (stderr, fmt, arg, true);
   va_end (arg);
+  fflush (stderr);
+}
+
+/* The buffer size for each command-line option warning.  */
+#define CMDLINE_WARNING_SIZE	256
+
+/* A linked list of command-line option warnings.  */
+
+struct cmdline_warning_list
+{
+  struct cmdline_warning_list *next;
+  char *warning;
+};
+
+/* The head of the linked list of command-line option warnings.  */
+static struct cmdline_warning_list *cmdline_warning_head = NULL;
+
+/* The tail of the linked list of command-line option warnings.  */
+static struct cmdline_warning_list **cmdline_warning_tail
+  = &cmdline_warning_head;
+
+/* Queue an unknown command-line option warning.  */
+
+void
+queue_unknown_cmdline_warning (const char *fmt, ...)
+{
+  va_list arg;
+  struct cmdline_warning_list *warning_ptr
+    = xmalloc (sizeof (*warning_ptr));
+  warning_ptr->warning = xmalloc (CMDLINE_WARNING_SIZE);
+  warning_ptr->next = NULL;
+  int written;
+
+  va_start (arg, fmt);
+  written = vsnprintf (warning_ptr->warning, CMDLINE_WARNING_SIZE, fmt,
+		       arg);
+  if (written < 0 || written >= CMDLINE_WARNING_SIZE)
+    {
+      /* If vsnprintf fails or truncates, output the warning directly.  */
+      fflush (stdout);
+      va_start (arg, fmt);
+      vfinfo (stderr, fmt, arg, true);
+      fflush (stderr);
+    }
+  else
+    {
+      *cmdline_warning_tail = warning_ptr;
+      cmdline_warning_tail = &warning_ptr->next;
+    }
+  va_end (arg);
+}
+
+/* Output queued unknown command-line option warnings.  */
+
+void
+output_unknown_cmdline_warnings (void)
+{
+  struct cmdline_warning_list *list = cmdline_warning_head;
+  struct cmdline_warning_list *next;
+  if (list == NULL)
+    return;
+
+  fflush (stdout);
+
+  for (; list != NULL; list = next)
+    {
+      next = list->next;
+      if (config.fatal_warnings)
+	einfo (_("%P: error: unsupported option: %s\n"), list->warning);
+      else
+	einfo (_("%P: warning: %s ignored\n"), list->warning);
+      free (list->warning);
+      free (list);
+    }
+
   fflush (stderr);
 }
 
@@ -678,4 +769,82 @@ ld_abort (const char *file, int line, const char *fn)
 	   file, line);
   einfo (_("%F%P: please report this bug\n"));
   xexit (1);
+}
+
+/* Decode a hexadecimal character. Return -1 on error. */
+static int
+hexdecode (char c)
+{
+  if ('0' <= c && c <= '9')
+    return c - '0';
+  if ('A' <= c && c <= 'F')
+    return c - 'A' + 10;
+  if ('a' <= c && c <= 'f')
+    return c - 'a' + 10;
+  return -1;
+}
+
+/* Decode a percent and/or %[string] encoded string. dst must be at least
+   the same size as src. It can be converted in place.
+
+   Following %[string] encodings are supported:
+
+   %[comma] for ,
+   %[lbrace] for {
+   %[quot] for "
+   %[rbrace] for }
+   %[space] for ' '
+
+   The percent decoding behaves the same as Python's urllib.parse.unquote. */
+void
+percent_decode (const char *src, char *dst)
+{
+  while (*src != '\0')
+    {
+      char c = *src++;
+      if (c == '%')
+	{
+	  char next1 = *src;
+	  int hex1 = hexdecode (next1);
+	  if (hex1 != -1)
+	    {
+	      int hex2 = hexdecode (*(src + 1));
+	      if (hex2 != -1)
+		{
+		  c = (char) ((hex1 << 4) + hex2);
+		  src += 2;
+		}
+	    }
+	  else if (next1 == '[')
+	    {
+	      if (strncmp (src + 1, "comma]", 6) == 0)
+		{
+		  c = ',';
+		  src += 7;
+		}
+	      else if (strncmp (src + 1, "lbrace]", 7) == 0)
+		{
+		  c = '{';
+		  src += 8;
+		}
+	      else if (strncmp (src + 1, "quot]", 5) == 0)
+		{
+		  c = '"';
+		  src += 6;
+		}
+	      else if (strncmp (src + 1, "rbrace]", 7) == 0)
+		{
+		  c = '}';
+		  src += 8;
+		}
+	      else if (strncmp (src + 1, "space]", 6) == 0)
+		{
+		  c = ' ';
+		  src += 7;
+		}
+	    }
+	}
+      *dst++ = c;
+    }
+  *dst = '\0';
 }

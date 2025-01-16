@@ -1,5 +1,5 @@
 /* dwarf.h - DWARF support header file
-   Copyright (C) 2005-2022 Free Software Foundation, Inc.
+   Copyright (C) 2005-2025 Free Software Foundation, Inc.
 
    This file is part of GNU Binutils.
 
@@ -23,18 +23,19 @@
 /* Structure found in the .debug_line section.  */
 typedef struct
 {
-  uint64_t	 li_length;
-  unsigned short li_version;
-  unsigned char  li_address_size;
-  unsigned char  li_segment_size;
-  uint64_t	 li_prologue_length;
-  unsigned char  li_min_insn_length;
-  unsigned char  li_max_ops_per_insn;
-  unsigned char  li_default_is_stmt;
-  int            li_line_base;
-  unsigned char  li_line_range;
-  unsigned char  li_opcode_base;
-  unsigned int   li_offset_size;
+  uint64_t li_length;
+  uint16_t li_version;
+  uint8_t  li_address_size;
+  uint8_t  li_segment_size;
+  uint64_t li_prologue_length;
+  uint8_t  li_min_insn_length;
+  uint8_t  li_max_ops_per_insn;
+  uint8_t  li_default_is_stmt;
+  int8_t   li_line_base;
+  uint8_t  li_line_range;
+  uint8_t  li_opcode_base;
+  /* Not part of the header.  4 for 32-bit dwarf, 8 for 64-bit.  */
+  unsigned int li_offset_size;
 }
 DWARF2_Internal_LineInfo;
 
@@ -82,6 +83,7 @@ enum dwarf_section_display_enum
   pubnames,
   gnu_pubnames,
   eh_frame,
+  eh_frame_hdr,
   macinfo,
   macro,
   str,
@@ -144,7 +146,7 @@ struct dwarf_section
   enum dwarf_section_display_enum  abbrev_sec;
   /* Used by clients to help them implement the reloc_at callback.  */
   void *                           reloc_info;
-  unsigned long                    num_relocs;
+  uint64_t                         num_relocs;
 };
 
 /* A structure containing the name of a debug section
@@ -256,10 +258,10 @@ extern void dwarf_select_sections_all (void);
 
 extern unsigned int * find_cu_tu_set (void *, unsigned int);
 
-extern void * cmalloc (size_t, size_t);
-extern void * xcalloc2 (size_t, size_t);
-extern void * xcmalloc (size_t, size_t);
-extern void * xcrealloc (void *, size_t, size_t);
+extern void * cmalloc (uint64_t, size_t);
+extern void * xcalloc2 (uint64_t, size_t);
+extern void * xcmalloc (uint64_t, size_t);
+extern void * xcrealloc (void *, uint64_t, size_t);
 
 /* A callback into the client.  Returns TRUE if there is a
    relocation against the given debug section at the given

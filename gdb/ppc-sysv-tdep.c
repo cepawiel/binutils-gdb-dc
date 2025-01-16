@@ -1,7 +1,7 @@
 /* Target-dependent code for PowerPC systems using the SVR4 ABI
    for GDB, the GNU debugger.
 
-   Copyright (C) 2000-2022 Free Software Foundation, Inc.
+   Copyright (C) 2000-2024 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -18,7 +18,8 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "defs.h"
+#include "extract-store-integer.h"
+#include "language.h"
 #include "gdbcore.h"
 #include "inferior.h"
 #include "regcache.h"
@@ -28,6 +29,7 @@
 #include "objfiles.h"
 #include "infcall.h"
 #include "dwarf2.h"
+#include "dwarf2/loc.h"
 #include "target-float.h"
 #include <algorithm>
 
@@ -67,7 +69,7 @@ ppc_sysv_abi_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 {
   ppc_gdbarch_tdep *tdep = gdbarch_tdep<ppc_gdbarch_tdep> (gdbarch);
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
-  int opencl_abi = ppc_sysv_use_opencl_abi (value_type (function));
+  int opencl_abi = ppc_sysv_use_opencl_abi (function->type ());
   ULONGEST saved_sp;
   int argspace = 0;		/* 0 is an initial wrong guess.  */
   int write_pass;
@@ -120,9 +122,9 @@ ppc_sysv_abi_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       for (argno = 0; argno < nargs; argno++)
 	{
 	  struct value *arg = args[argno];
-	  struct type *type = check_typedef (value_type (arg));
+	  struct type *type = check_typedef (arg->type ());
 	  int len = type->length ();
-	  const bfd_byte *val = value_contents (arg).data ();
+	  const bfd_byte *val = arg->contents ().data ();
 
 	  if (type->code () == TYPE_CODE_FLT && len <= 8
 	      && !tdep->soft_float)
@@ -1011,7 +1013,7 @@ ppc_sysv_abi_return_value (struct gdbarch *gdbarch, struct value *function,
 			   gdb_byte *readbuf, const gdb_byte *writebuf)
 {
   return do_ppc_sysv_return_value (gdbarch,
-				   function ? value_type (function) : NULL,
+				   function ? function->type () : NULL,
 				   valtype, regcache, readbuf, writebuf, 0);
 }
 
@@ -1023,7 +1025,7 @@ ppc_sysv_abi_broken_return_value (struct gdbarch *gdbarch,
 				  gdb_byte *readbuf, const gdb_byte *writebuf)
 {
   return do_ppc_sysv_return_value (gdbarch,
-				   function ? value_type (function) : NULL,
+				   function ? function->type () : NULL,
 				   valtype, regcache, readbuf, writebuf, 1);
 }
 
@@ -1042,12 +1044,10 @@ static int
 convert_code_addr_to_desc_addr (CORE_ADDR code_addr, CORE_ADDR *desc_addr)
 {
   struct obj_section *dot_fn_section;
-  struct bound_minimal_symbol dot_fn;
-  struct bound_minimal_symbol fn;
 
   /* Find the minimal symbol that corresponds to CODE_ADDR (should
      have a name of the form ".FN").  */
-  dot_fn = lookup_minimal_symbol_by_pc (code_addr);
+  bound_minimal_symbol dot_fn = lookup_minimal_symbol_by_pc (code_addr);
   if (dot_fn.minsym == NULL || dot_fn.minsym->linkage_name ()[0] != '.')
     return 0;
   /* Get the section that contains CODE_ADDR.  Need this for the
@@ -1059,8 +1059,10 @@ convert_code_addr_to_desc_addr (CORE_ADDR code_addr, CORE_ADDR *desc_addr)
      address.  Only look for the minimal symbol in ".FN"'s object file
      - avoids problems when two object files (i.e., shared libraries)
      contain a minimal symbol with the same name.  */
-  fn = lookup_minimal_symbol (dot_fn.minsym->linkage_name () + 1, NULL,
-			      dot_fn_section->objfile);
+  bound_minimal_symbol fn
+    = lookup_minimal_symbol (current_program_space,
+			     dot_fn.minsym->linkage_name () + 1,
+			     dot_fn_section->objfile);
   if (fn.minsym == NULL)
     return 0;
   /* Found a descriptor.  */
@@ -1125,7 +1127,11 @@ ppc64_aggregate_candidate (struct type *type,
 
 	  if (!get_array_bounds (type, &low_bound, &high_bound))
 	    return -1;
-	  count *= high_bound - low_bound;
+
+	  LONGEST nr_array_elements = (low_bound > high_bound
+				       ? 0
+				       : (high_bound - low_bound + 1));
+	  count *= nr_array_elements;
 
 	  /* There must be no padding.  */
 	  if (count == 0)
@@ -1147,7 +1153,7 @@ ppc64_aggregate_candidate (struct type *type,
 	    {
 	      LONGEST sub_count;
 
-	      if (field_is_static (&type->field (i)))
+	      if (type->field (i).is_static ())
 		continue;
 
 	      sub_count = ppc64_aggregate_candidate
@@ -1561,13 +1567,13 @@ ppc64_sysv_abi_push_param (struct gdbarch *gdbarch,
 		    && eltype->length () == 16
 		    && (gdbarch_long_double_format (gdbarch)
 			== floatformats_ieee_quad))
-                 /* IEEE FLOAT128, args in vector registers.  */
+		  /* IEEE FLOAT128, args in vector registers.  */
 		  {
 		    ppc64_sysv_abi_push_vreg (gdbarch, elval, argpos);
 		    align = 16;
 		  }
 		else if (eltype->code () == TYPE_CODE_FLT
-                          || eltype->code () == TYPE_CODE_DECFLOAT)
+			 || eltype->code () == TYPE_CODE_DECFLOAT)
 		    /* IBM long double and all other floats and decfloats, args
 		       are in a pair of floating point registers.  */
 		  ppc64_sysv_abi_push_freg (gdbarch, eltype, elval, argpos);
@@ -1604,7 +1610,7 @@ ppc64_sysv_abi_push_dummy_call (struct gdbarch *gdbarch,
   CORE_ADDR func_addr = find_function_addr (function, NULL);
   ppc_gdbarch_tdep *tdep = gdbarch_tdep<ppc_gdbarch_tdep> (gdbarch);
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
-  int opencl_abi = ppc_sysv_use_opencl_abi (value_type (function));
+  int opencl_abi = ppc_sysv_use_opencl_abi (function->type ());
   ULONGEST back_chain;
   /* See for-loop comment below.  */
   int write_pass;
@@ -1689,8 +1695,8 @@ ppc64_sysv_abi_push_dummy_call (struct gdbarch *gdbarch,
       for (argno = 0; argno < nargs; argno++)
 	{
 	  struct value *arg = args[argno];
-	  struct type *type = check_typedef (value_type (arg));
-	  const bfd_byte *val = value_contents (arg).data ();
+	  struct type *type = check_typedef (arg->type ());
+	  const bfd_byte *val = arg->contents ().data ();
 
 	  if (type->code () == TYPE_CODE_COMPLEX)
 	    {
@@ -1758,7 +1764,7 @@ ppc64_sysv_abi_push_dummy_call (struct gdbarch *gdbarch,
      the pointer itself identifies the descriptor.  */
   if (tdep->elf_abi == POWERPC_ELF_V1)
     {
-      struct type *ftype = check_typedef (value_type (function));
+      struct type *ftype = check_typedef (function->type ());
       CORE_ADDR desc_addr = value_as_address (function);
 
       if (ftype->code () == TYPE_CODE_PTR
@@ -1986,7 +1992,7 @@ ppc64_sysv_abi_return_value (struct gdbarch *gdbarch, struct value *function,
 			     gdb_byte *readbuf, const gdb_byte *writebuf)
 {
   ppc_gdbarch_tdep *tdep = gdbarch_tdep<ppc_gdbarch_tdep> (gdbarch);
-  struct type *func_type = function ? value_type (function) : NULL;
+  struct type *func_type = function ? function->type () : NULL;
   int opencl_abi = func_type? ppc_sysv_use_opencl_abi (func_type) : 0;
   struct type *eltype;
   int nelt, ok;
@@ -2099,6 +2105,10 @@ ppc64_sysv_abi_return_value (struct gdbarch *gdbarch, struct value *function,
       return RETURN_VALUE_REGISTER_CONVENTION;
     }
 
+  if (!language_pass_by_reference (valtype).trivially_copyable
+      && valtype->code () == TYPE_CODE_STRUCT)
+    return RETURN_VALUE_STRUCT_CONVENTION;
+
   /* In the ELFv2 ABI, aggregate types of up to 16 bytes are
      returned in registers r3:r4.  */
   if (tdep->elf_abi == POWERPC_ELF_V2
@@ -2152,3 +2162,44 @@ ppc64_sysv_abi_return_value (struct gdbarch *gdbarch, struct value *function,
   return RETURN_VALUE_STRUCT_CONVENTION;
 }
 
+CORE_ADDR
+ppc_sysv_get_return_buf_addr (struct type *val_type,
+			      const frame_info_ptr &cur_frame)
+{
+  /* The PowerPC ABI specifies aggregates that are not returned by value
+     are returned in a storage buffer provided by the caller.  The
+     address of the storage buffer is provided as a hidden first input
+     argument in register r3.  The PowerPC ABI does not guarantee that
+     register r3 will not be changed while executing the function.  Hence, it
+     cannot be assumed that r3 will still contain the address of the storage
+     buffer when execution reaches the end of the function.
+
+     This function attempts to determine the value of r3 on entry to the
+     function using the DW_OP_entry_value DWARF entries.  This requires
+     compiling the user program with -fvar-tracking to resolve the
+     DW_TAG_call_sites in the binary file.  */
+
+  union call_site_parameter_u kind_u;
+  enum call_site_parameter_kind kind;
+  CORE_ADDR return_val = 0;
+
+  kind_u.dwarf_reg = 3;  /* First passed arg/return value is in r3.  */
+  kind = CALL_SITE_PARAMETER_DWARF_REG;
+
+  /* val_type is the type of the return value.  Need the pointer type
+     to the return value.  */
+  val_type = lookup_pointer_type (val_type);
+
+  try
+    {
+      return_val = value_as_address (value_of_dwarf_reg_entry (val_type,
+							       cur_frame,
+							       kind, kind_u));
+    }
+  catch (const gdb_exception_error &e)
+    {
+      warning ("Cannot determine the function return value.\n"
+	       "Try compiling with -fvar-tracking.");
+    }
+  return return_val;
+}

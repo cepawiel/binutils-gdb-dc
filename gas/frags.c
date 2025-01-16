@@ -1,5 +1,5 @@
 /* frags.c - manage frags -
-   Copyright (C) 1987-2022 Free Software Foundation, Inc.
+   Copyright (C) 1987-2025 Free Software Foundation, Inc.
 
    This file is part of GAS, the GNU Assembler.
 
@@ -25,9 +25,9 @@
 extern fragS zero_address_frag;
 extern fragS predefined_address_frag;
 
-static int totalfrags;
+static unsigned int totalfrags;
 
-int
+unsigned int
 get_frag_count (void)
 {
   return totalfrags;
@@ -166,7 +166,8 @@ frag_new (size_t old_frags_var_max_size
 
   /* Fix up old frag's fr_fix.  */
   frag_now->fr_fix = frag_now_fix_octets ();
-  gas_assert (frag_now->fr_fix >= old_frags_var_max_size);
+  gas_assert (frag_now->fr_fix >= old_frags_var_max_size
+	      || now_seg == absolute_section);
   frag_now->fr_fix -= old_frags_var_max_size;
   /* Make sure its type is valid.  */
   gas_assert (frag_now->fr_type != 0);

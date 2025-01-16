@@ -1,5 +1,5 @@
 /* tc-aarch64.h -- Header file for tc-aarch64.c.
-   Copyright (C) 2009-2022 Free Software Foundation, Inc.
+   Copyright (C) 2009-2025 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of GAS.
@@ -191,7 +191,10 @@ struct aarch64_frag_type
       goto LABEL;								\
     }
 
+/* COFF sub section alignment calculated using the write.c implementation.  */
+#ifndef OBJ_COFF
 #define SUB_SEGMENT_ALIGN(SEG, FRCHAIN) 0
+#endif
 
 #define DWARF2_LINE_MIN_INSN_LENGTH 	4
 
@@ -246,18 +249,71 @@ struct aarch64_segment_info_type
 extern void aarch64_after_parse_args (void);
 #define md_after_parse_args() aarch64_after_parse_args ()
 
-#else /* Not OBJ_ELF.  */
-#define GLOBAL_OFFSET_TABLE_NAME "__GLOBAL_OFFSET_TABLE_"
-#endif
-
-#if defined OBJ_ELF || defined OBJ_COFF
-
 # define EXTERN_FORCE_RELOC 			1
 # define tc_fix_adjustable(FIX) 		1
+
 /* Values passed to md_apply_fix don't include the symbol value.  */
 # define MD_APPLY_SYM_VALUE(FIX) 		0
 
-#endif
+#else /* Neither OBJ_ELF nor OBJ_COFF.  */
+
+#define GLOBAL_OFFSET_TABLE_NAME "__GLOBAL_OFFSET_TABLE_"
+
+#endif /*  OBJ_ELF || OBJ_COFF.  */
+
+#ifdef OBJ_ELF
+
+#define TARGET_USE_GINSN 1
+/* Allow GAS to synthesize DWARF CFI for hand-written asm.
+   PS: TARGET_USE_CFIPOP is a pre-condition.  */
+#define TARGET_USE_SCFI 1
+/* Identify the maximum DWARF register number of all the registers being
+   tracked for SCFI.  This is the last DWARF register number of the set
+   of SP, FP, and all callee-saved registers.  For Aarch64, this means 79
+   because FP/Advanced SIMD v8-v15 are also callee-saved registers.  */
+# define SCFI_MAX_REG_ID 79
+/* Identify the DWARF register number of the frame-pointer register.  */
+# define REG_FP 29
+/* Identify the DWARF register number of the link register.  */
+# define REG_LR 30
+/* Identify the DWARF register number of the stack-pointer register.  */
+# define REG_SP 31
+
+#define SCFI_INIT_CFA_OFFSET 0
+
+#define SCFI_CALLEE_SAVED_REG_P(dw2reg)  aarch64_scfi_callee_saved_p (dw2reg)
+extern bool aarch64_scfi_callee_saved_p (uint32_t dw2reg_num);
+
+/* Whether SFrame stack trace info is supported.  */
+extern bool aarch64_support_sframe_p (void);
+#define support_sframe_p aarch64_support_sframe_p
+
+/* The stack pointer DWARF register number for SFrame CFA tracking.  */
+extern unsigned int aarch64_sframe_cfa_sp_reg;
+#define SFRAME_CFA_SP_REG aarch64_sframe_cfa_sp_reg
+
+/* The frame pointer DWARF register number for SFrame CFA and FP tracking.  */
+extern unsigned int aarch64_sframe_cfa_fp_reg;
+#define SFRAME_CFA_FP_REG aarch64_sframe_cfa_fp_reg
+
+/* The return address DWARF register number for SFrame RA tracking.  */
+extern unsigned int aarch64_sframe_cfa_ra_reg;
+#define SFRAME_CFA_RA_REG aarch64_sframe_cfa_ra_reg
+
+/* Whether SFrame return address tracking is needed.  */
+extern bool aarch64_sframe_ra_tracking_p (void);
+#define sframe_ra_tracking_p aarch64_sframe_ra_tracking_p
+
+/* The fixed offset from CFA for SFrame to recover the return address.
+   (useful only when SFrame RA tracking is not needed).  */
+extern offsetT aarch64_sframe_cfa_ra_offset (void);
+#define sframe_cfa_ra_offset aarch64_sframe_cfa_ra_offset
+
+/* The abi/arch indentifier for SFrame.  */
+unsigned char aarch64_sframe_get_abi_arch (void);
+#define sframe_get_abi_arch aarch64_sframe_get_abi_arch
+
+#endif /* OBJ_ELF  */
 
 #define MD_PCREL_FROM_SECTION(F,S) md_pcrel_from_section(F,S)
 
@@ -278,5 +334,14 @@ extern void aarch64_init_frag (struct frag *, int);
 extern void aarch64_handle_align (struct frag *);
 extern int tc_aarch64_regname_to_dw2regnum (char *regname);
 extern void tc_aarch64_frame_initial_instructions (void);
+
+#ifdef TE_PE
+
+#define O_secrel O_md1
+
+#define TC_DWARF2_EMIT_OFFSET  tc_pe_dwarf2_emit_offset
+void tc_pe_dwarf2_emit_offset (symbolS *, unsigned int);
+
+#endif /* TE_PE */
 
 #endif /* TC_AARCH64 */
